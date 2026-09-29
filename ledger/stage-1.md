@@ -1,0 +1,66 @@
+# Ledger Stage 1 — Core reservation engine (spec stage-1.md)
+
+## Rulings / ambiguities
+- A1: "plain decimal digits" integer query params: strict regex ^[0-9]+$; party_size query invalid form → 422 validation_failed. Rationale: §5 explicit.
+- A2: Fall-back "first occurrence": resolve ambiguous local time to pre-transition offset (larger offset for Berlin/NY fall-back). Second occurrence not bookable (same input string maps to first). Rationale: §9.
+- A3: Duration absolute: ends_at = starts_at instant + duration real minutes; local ends_at derived from that instant. Rationale: §9 example 01:30+90m→02:00.
+- A4: Idempotency resolved after JSON parse + auth, before field validation/resource checks; 4xx originals leave key reusable. Rationale: §7.
+- A5: created_at in UTC (+00:00), RFC3339 with offset. Rationale: §3.4 + example.
+- A6: Fixture past dates allowed; cutoffs still enforced using real now. Rationale: §4.
+- A7: Strict calendar validation: reject Feb 30, month 13, bad day counts → 422 validation_failed (or invalid_local_time only for nonexistent DST wall times on booking). Rationale: dispatch + §5.
+
+## Clauses
+- R-1.1 Listen on 0.0.0.0 using PORT env, default 8080.
+- R-1.2 GET /health → 200 {"status":"ok"} once ready, within 60s of start.
+- R-1.3 POST /_test/reset replaces all state with fixture; 204; subsequent reads see only fixture; repeatable; no auth.
+- R-1.4 JSON conventions: req/resp application/json; charset=utf-8; response timestamps RFC3339 with explicit offset.
+- R-1.5 Unknown body fields ignored; unknown query params ignored.
+- R-1.6 IDs opaque strings ≤64 chars, incl. fixture IDs.
+- R-1.7 Restaurant fields: timezone IANA; slot_minutes grid; reservation_duration_minutes; cancellation_cutoff_minutes; opening_hours per weekday; closed day = no entry; capacity per table.
+- R-1.8 weekday ∈ {mon..sun}; opens/closes HH:MM 24h; closes>opens same day; never cross midnight.
+- R-1.9 Seeded users can log in immediately with given password.
+- R-1.10 Fixture reservations may seed confirmed bookings (body + id, reference, user_id).
+- R-1.11 Fixture dates any calendar date; past starts must not be rejected solely for pastness; cutoffs still apply.
+- R-1.12 Overlap = half-open [starts_at, starts_at+duration); 19:00+90m does not overlap 20:30. Two confirmed never share table on overlap, incl. concurrent requests.
+- R-1.13 Retries/rejected requests create no duplicates/partials.
+- R-1.14 Error envelope {error:{code,message}} on all 4xx/5xx; specified status+code; message free.
+- R-1.15 400 malformed_request: unparseable body or wrong JSON type field.
+- R-1.16 400 missing_idempotency_key: Idempotency-Key absent/empty on required paths.
+- R-1.17 401 unauthenticated: missing/malformed/unknown bearer.
+- R-1.18 403 forbidden: authenticated but not permitted.
+- R-1.19 404 not_found incl. invisible-to-caller.
+- R-1.20 409 idempotency_key_reuse: key used with different body.
+- R-1.21 422 validation_failed: missing required field/param or rule violation with no specific code.
+- R-1.22 Correct-type invalid format/range → 422 unless endpoint says otherwise (invalid dates, negatives, over-max).
+- R-1.23 party_size invalid values incl. strings/booleans → 422; starts_at_local not bare YYYY-MM-DDTHH:MM → 422; other wrong types → 400.
+- R-1.24 Integer query params plain decimal digits only (1e9/4.0/+4 → 422).
+- R-1.25 Idempotency-Key valid 1..255 chars else 422.
+- R-1.26 No 5xx ever, incl. concurrent load.
+- R-1.27 POST /auth/signup {email,password,display_name} → 201 {user_id,display_name,token}; email taken → 409 email_taken; password<8 → 422; email not local@domain → 422.
+- R-1.28 POST /auth/login → 200 {user_id,display_name,token}; wrong/unknown → 401 unauthenticated.
+- R-1.29 Auth required everywhere except /health, /_test/reset, signup, login, GET /restaurants, GET /restaurants/{id}, GET /availability. Bearer scheme. Tokens never expire; multiple per account.
+- R-1.30 Passwords hashed (bcrypt/scrypt/Argon2 equiv); no plaintext.
+- R-1.31 Idempotency on POST /reservations + POST /reservation-moves; key scoped per user; replay = same method+path+body (same JSON value); different path = different request.
+- R-1.32 Idempotency order: after parse+auth, before validation/resource checks; different body → 409 even if new body invalid.
+- R-1.33 Idempotency matrix: absent/empty → 400; first → 201 normal; replay → 200 identical JSON; different body → 409; reuse after 4xx → first use. Concurrent identical → exactly one 201, rest 200, single effect. Replay after change/cancel → original response, no state change.
+- R-1.34 GET /restaurants → {restaurants:[{id,name,timezone}]} public.
+- R-1.35 GET /restaurants/{id} full shape; 404 unknown.
+- R-1.36 GET /availability public; required restaurant_id,date,party_size else 422; slots every slot_minutes from opens with slot+duration<=closes; available_table_ids = capacity>=party_size and no overlap, fixture order; empty list if none; closed day → slots:[].
+- R-1.37 Slot shape {starts_at_local, starts_at(RFC3339 offset), available_table_ids}; response echoes restaurant_id,date,timezone.
+- R-1.38 POST /reservations requires Idempotency-Key; body {restaurant_id,table_id,starts_at_local,party_size}; local wall-clock resolved in restaurant TZ; → 201 full shape with reservation_id, reference 6-12 A-Z0-9 unique immutable, status confirmed, starts_at/ends_at RFC3339, created_at.
+- R-1.39 Booking errors: overlap → 409 table_unavailable; off-grid → 422 not_on_slot_grid; outside hours/end after closes → 422 outside_opening_hours; party>capacity → 422 party_exceeds_capacity; party<1/non-integer → 422; nonexistent DST time → 422 invalid_local_time; unknown restaurant/table/wrong restaurant → 404.
+- R-1.40 GET /reservations: caller's only, starts_at desc, confirmed+cancelled, {reservations:[...]}.
+- R-1.41 GET /reservations/{reference}: caller's only else 404.
+- R-1.42 POST /reservations/{reference}/cancel → 200 full shape status cancelled; double-cancel 200; within cutoff or later → 409 cutoff_passed; other's → 404; frees slot immediately.
+- R-1.43 PATCH /reservations/{reference}: subset table_id/starts_at_local/party_size; no idem key; same validation as create; cutoff vs current start → 409 cutoff_passed; cancelled → 409 reservation_cancelled; atomic (fail leaves original); reference+id survive.
+- R-1.44 DST spring: skipped times absent from availability; booking → 422 invalid_local_time.
+- R-1.45 DST fall-back: first occurrence; slot once; second not bookable.
+- R-1.46 Duration absolute real minutes (§9 example).
+- R-1.47 IANA offsets correct for Europe/Berlin + America/New_York transitions listed.
+- R-1.48 GET /_test/export → 200 {track:"tablekeeper",format_version:1,state}; atomic read-only snapshot; no auth.
+- R-1.49 POST /_test/import replaces state atomically → 204; accepts own export; no env coupling; repeatable; invalid JSON → §5; missing/wrong track/version/bad state → 422 no mutation; preserves accounts/hashes/tokens/config/reservations/references/receipts/timestamps; failed keys reusable; wipes prior dest incl. credentials; reset clears imported state; 10s timeout.
+- R-1.50 POST /reservation-moves: auth+idem; {moves:[1..8 distinct refs]} else 422; same restaurant + caller ownership else 404/422; no token 401; PATCH-field semantics; identity/owner/created immutable; cancelled → 409 reservation_cancelled; per-booking cutoff; error precedence input order, cutoff before other changes; overlap incl. among results → 409 table_unavailable; unchanged retain occupancy; atomic all-or-nothing incl. retry keys; success 201 {reservations in input order}; replay 200 original; no-op retains; export/import preserves receipts+bookings.
+- R-1.51 Strict calendar validation: nonexistent dates (Feb 30 etc.) rejected 422 (date params) / booking rules R-1.39; never silently normalize.
+- R-1.52 In-memory mutex: concurrent overlapping bookings serialized, no check-and-act race.
+- R-1.53 Delivery: Dockerfile builds+starts with -e PORT + mapping; offline runtime; single-container deps/seeds; RUN.md command; no compose at run; resource limits (2vCPU/2GiB/60s/50-flight/5s timeout, 10s reset).
+- R-1.54 Dockerfile Linux Alpine Node 20; zero-dependency backend (http/crypto/Intl only) per seat boundary.
