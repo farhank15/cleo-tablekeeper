@@ -7,7 +7,10 @@ Containerized zero-dependency Node.js HTTP service: reservation engine, table in
 - Stage 1: core engine + API (§1–§11 of stage-1.md). Seats: forge (backend), release (verify), sentinel IDLE (no interface).
 - Stage 2: browser interface. Stage 3: policies/series. Stage 4: emergency replanning.
 
-## Seat assignments (Stage 1)
+## Seat assignments (Stage 4)
+- @cleo-forge: stage-4/ replans preview+apply + series amend (R-4.1..R-4.8). WOs WO-4.1..WO-4.4.
+- @cleo-release: independent verification, isolated container run, ledger coverage 8/8.
+- @cleo-sentinel: IDLE (no new screens; existing screens reflect applied plans per R-4.5).
 - @cleo-forge: implement server.js (http, crypto, Intl), Dockerfile, RUN.md in stage-1/ (copy-forward base). WOs WO-1.1..WO-1.6.
 - @cleo-release: independent checks from spec; run harness isolated; 8-point adversarial matrix.
 - @cleo-sentinel: IDLE for Stage 1 (no HTML/CSS).
