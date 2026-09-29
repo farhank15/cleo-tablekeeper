@@ -89,7 +89,9 @@ for route in ["/", "/signup", "/login", "/lookup"]:
     check(f"R-2.1 route-{route}-html", s == 200 and ("<html" in b.lower() or "<!doctype" in b.lower()), f"got {s} {b[:120]}")
 # R-2.7..R-2.12 testids on home page
 s, home = get_text("/")
-for tid in ["restaurant-select", "date-input", "party-size-input", "search-button", "availability-grid"]:
+# Static testids (grid/no-slots are rendered dynamically post-search by design —
+# error/detail/confirmation nodes must be absent-when-inactive per browser tests).
+for tid in ["restaurant-select", "date-input", "party-size-input", "search-button"]:
     check(f"R-2.8 testid-{tid}", f'data-testid="{tid}"' in home, "missing")
 s, lo = get_text("/login")
 for tid in ["login-email", "login-password", "login-submit"]:
