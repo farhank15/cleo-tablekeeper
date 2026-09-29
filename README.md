@@ -11,10 +11,11 @@ Autonomous software factory developed for the **WeAreDevelopers x BAND Hackathon
 The core premise of the Dark Factory competition is **Lights-Out Software Engineering**: building a system of autonomous coding agents capable of taking a specification, planning the execution, implementing the solution, and rigorously verifying the invariants **without a single human steering prompt, debugging hint, or mid-flight approval**.
 
 ### The Core Problem (Why 90% of Multi-Agent Systems Fail)
-Empirical software engineering research on multi-agent trajectories (such as the **MAST taxonomy** across 1,600+ traces) demonstrates that autonomous coding agents rarely fail due to syntax or algorithmic inability. Instead:
-* **42% of failures** stem from **Specification Misinterpretation & Scope Creep**.
-* **37% of failures** stem from **Inter-Agent Misalignment & Referential Handoffs**.
-* **21% of failures** stem from **Verification Collapse & False-Positive Acceptance**.
+Empirical software engineering research on multi-agent trajectories (such as the **MAST taxonomy**, arXiv:2503.13657, evaluating 1,600+ multi-agent traces) demonstrates that autonomous coding agents rarely fail due to syntax or language inability. Instead, failures are organizational and behavioral:
+* **41.77% of observed failures** fall into **Specification Issues** (misinterpretation, unstated assumptions, ignoring constraints).
+* **37.60% of observed failures** stem from **Inter-Agent Misalignment** (referential handoffs, context drift, duplicate work).
+* **20.63% of observed failures** stem from **Task Verification Collapse** (false-positive passes, shallow test coverage).
+* The leading individual failure modes are **Step Repetition (17.14%)**, **Reasoning-Action Mismatch (13.98%)**, and **Failure to Request Clarification (11.65%)**.
 
 In the Tablekeeper challenge, this danger is multiplied because the organizers ship only a fraction of the test suite (**only 11% of checks are shipped in Stage 3, and 21% in Stage 4**). Factories that rely on passive verification fall into the *"Green Illusion"* trap—passing sample tests while failing completely against hidden grading suites.
 
