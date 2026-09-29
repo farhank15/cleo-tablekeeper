@@ -12,7 +12,6 @@
 <div class="userbox"><span data-testid="current-user" id="current-user" hidden></span><button data-testid="logout-button" id="logout-button" hidden>Log out</button></div>
 </header>
 <main id="app">
-<!-- SEARCH -->
 <section id="screen-search" data-screen="/">
 <h1>Find your table</h1>
 <div class="card form-grid">
@@ -22,11 +21,9 @@
 <button data-testid="search-button" id="search-button" class="primary">Search</button>
 </div>
 <div id="search-status" role="status" aria-live="polite"></div>
-<div data-testid="availability-grid" id="availability-grid" class="grid"></div>
-<div data-testid="no-slots" id="no-slots" hidden>No tables available for this search. Try another date or party size.</div>
-<div data-testid="auth-error" id="auth-error" hidden></div>
+<div id="search-mount"></div>
+<div id="search-auth-mount"></div>
 </section>
-<!-- BOOKING -->
 <section id="screen-booking" hidden>
 <h2>Your selection</h2>
 <div data-testid="booking-form" id="booking-form" class="card">
@@ -34,17 +31,10 @@
 <label>Party size<input data-testid="booking-party-size" id="booking-party-size" type="number" min="1"></label>
 <input type="hidden" id="booking-key">
 <button data-testid="booking-submit" id="booking-submit" class="primary">Book table</button>
-<div data-testid="booking-error" id="booking-error" hidden></div>
-<div data-testid="booking-uncertain" id="booking-uncertain" hidden></div>
+<div id="booking-mount"></div>
 </div>
-<div data-testid="confirmation" id="confirmation" hidden class="card success">
-<p>Confirmed</p>
-<p>Reference: <span data-testid="confirmation-reference" id="confirmation-reference"></span></p>
-<p data-testid="confirmation-details" id="confirmation-details"></p>
-<p data-testid="confirmation-tables" id="confirmation-tables"></p>
-</div>
+<div id="confirmation-mount"></div>
 </section>
-<!-- SIGNUP -->
 <section id="screen-signup" data-screen="/signup" hidden>
 <h1>Create account</h1>
 <div class="card form-grid">
@@ -52,33 +42,25 @@
 <label>Password<input data-testid="signup-password" id="signup-password" type="password"></label>
 <label>Display name<input data-testid="signup-display-name" id="signup-display-name" type="text"></label>
 <button data-testid="signup-submit" id="signup-submit" class="primary">Sign up</button>
-<div data-testid="auth-error" id="signup-error" hidden></div>
+<div id="signup-mount"></div>
 </div>
 </section>
-<!-- LOGIN -->
 <section id="screen-login" data-screen="/login" hidden>
 <h1>Welcome back</h1>
 <div class="card form-grid">
 <label>Email<input data-testid="login-email" id="login-email" type="email"></label>
 <label>Password<input data-testid="login-password" id="login-password" type="password"></label>
 <button data-testid="login-submit" id="login-submit" class="primary">Log in</button>
-<div data-testid="auth-error" id="login-error" hidden></div>
+<div id="login-mount"></div>
 </div>
 </section>
-<!-- LOOKUP -->
 <section id="screen-lookup" data-screen="/lookup" hidden>
 <h1>Find your reservation</h1>
 <div class="card form-grid">
 <label>Reference<input data-testid="lookup-reference-input" id="lookup-reference-input" type="text"></label>
 <button data-testid="lookup-submit" id="lookup-submit" class="primary">Look up</button>
 </div>
-<div data-testid="reservation-detail" id="reservation-detail" hidden class="card">
-<p>Status: <span data-testid="reservation-status" id="reservation-status"></span></p>
-<p id="reservation-info"></p>
-<p data-testid="reservation-tables" id="reservation-tables"></p>
-<button data-testid="reservation-cancel-button" id="reservation-cancel-button">Cancel reservation</button>
-</div>
-<div data-testid="reservation-error" id="reservation-error" hidden></div>
+<div id="lookup-mount"></div>
 </section>
 </main>
 <script src="/app.js"></script>
