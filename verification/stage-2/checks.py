@@ -60,8 +60,16 @@ s, b, _ = req("POST", "/reservations",
     {**A, "Idempotency-Key": "c2"})
 check("R-2.16 both-ids-422", s == 422 and code(b) == "validation_failed", f"got {s} {b[:150]}")
 # R-2.17 unlisted pair -> combination_not_allowed; >2 -> same; dup -> validation_failed; overlap any member -> 409
+FIX3 = {"users": [{"id": "u1", "email": "a@b.com", "password": "correct horse", "display_name": "Ada"}],
+ "restaurants": [{"id": "r1", "name": "Zum Anker", "timezone": "Europe/Berlin", "slot_minutes": 30,
+   "reservation_duration_minutes": 90, "cancellation_cutoff_minutes": 0,
+   "opening_hours": [{"weekday": "thu", "opens": "18:00", "closes": "23:00"}],
+   "tables": [{"id": "t_1", "label": "Fenster", "capacity": 2}, {"id": "t_2", "label": "Mitte", "capacity": 4}, {"id": "t_3", "label": "Ecke", "capacity": 4}],
+   "combinable": [["t_1", "t_2"]]}],
+ "reservations": []}
+s, b, _ = req("POST", "/_test/reset", FIX3)
 s, b, _ = req("POST", "/reservations",
-    {"restaurant_id": "r1", "table_ids": ["t_1", "t_2", "t_2"], "starts_at_local": "2026-09-24T20:30", "party_size": 2},
+    {"restaurant_id": "r1", "table_ids": ["t_1", "t_2", "t_3"], "starts_at_local": "2026-09-24T19:00", "party_size": 2},
     {**A, "Idempotency-Key": "c3"})
 check("R-2.17 gt2-combo-422", s == 422 and code(b) == "combination_not_allowed", f"got {s} {b[:150]}")
 s, b, _ = req("POST", "/reservations",
