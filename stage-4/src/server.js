@@ -116,6 +116,9 @@ function canonPair(rest, ids) {
 }
 function sameSet(a, b) { return a.length === b.length && a.every(x => b.includes(x)); }
 function tableBusy(rest, tableId, startMs, durMin, excludeId) {
+  for (const c of (rest.closures || [])) {
+    if (c.table_id === tableId && overlap(startMs, durMin, c.fromMs, (c.toMs - c.fromMs) / 60000)) return true;
+  }
   for (const r of S.reservations) {
     if (r.status !== 'confirmed' || r.id === excludeId) continue;
     if (r.restaurant_id !== rest.id) continue;
@@ -256,6 +259,36 @@ function validatePolicyBody(b, rest) {
   }
   return true;
 }
+function parseInstantStrict(s) {
+  if (typeof s !== 'string') return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-]\d{2}:\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5], se = +m[6];
+  if (mo < 1 || mo > 12 || h > 23 || mi > 59 || se > 59) return null;
+  if (d < 1 || d > daysIn(y, mo)) return null;
+  const off = (m[7][0] === '+' ? 1 : -1) * (parseInt(m[7].slice(1, 3), 10) * 60 + parseInt(m[7].slice(4, 6), 10));
+  if (parseInt(m[7].slice(1, 3), 10) > 14) return null;
+  return Date.UTC(y, mo - 1, d, h, mi, se) - off * 60000;
+}
+function optionList(rest, cfgTerms, party) {
+  const opts = [];
+  for (const t of rest.tables) {
+    const cap = cfgTerms.capacities ? cfgTerms.capacities[t.id] : t.capacity;
+    if (cap >= party) opts.push({ ids: [t.id], cap });
+  }
+  for (const p of (rest.combinable || [])) {
+    const cap = (cfgTerms.capacities ? (cfgTerms.capacities[p[0]] + cfgTerms.capacities[p[1]]) : (rest.tables.find(x => x.id === p[0]).capacity + rest.tables.find(x => x.id === p[1]).capacity));
+    if (cap >= party) opts.push({ ids: [p[0], p[1]], cap });
+  }
+  return opts;
+}
+function closureBlocksTable(rest, tid, startMs, durMin, extraFrom, extraTo, extraTable) {
+  for (const c of (rest.closures || [])) {
+    if (c.table_id === tid && overlap(startMs, durMin, c.fromMs, (c.toMs - c.fromMs) / 60000)) return true;
+  }
+  if (extraTable && tid === extraTable && overlap(startMs, durMin, extraFrom, (extraTo - extraFrom) / 60000)) return true;
+  return false;
+}
 async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname, method = req.method;
@@ -297,7 +330,7 @@ async function handler(req, res) {
       for (const u of (f.users || [])) ns.users.push({ id: u.id, email: u.email, pw: hashPw(u.password), display_name: u.display_name, tokens: [] });
       for (const r of (f.restaurants || [])) {
         if (r.combinable === undefined) r.combinable = [];
-        r.policies = []; r._pv = 0; r._rev = 1;
+        r.policies = []; r._pv = 0; r._rev = 0; r.closures = []; r.plans = []; r._planSeq = 1;
         r.manager_user_ids = Array.isArray(r.manager_user_ids) ? r.manager_user_ids : [];
         ns.restaurants.push(r);
       }
@@ -329,7 +362,10 @@ async function handler(req, res) {
         if (r.combinable === undefined) r.combinable = [];
         if (!Array.isArray(r.policies)) r.policies = [];
         if (typeof r._pv !== 'number') r._pv = (r.policies || []).reduce((m, p) => Math.max(m, p.policy_version || 0), 0);
-        if (typeof r._rev !== 'number') r._rev = 1;
+        if (typeof r._rev !== 'number') r._rev = 0;
+        if (!Array.isArray(r.closures)) r.closures = [];
+        if (!Array.isArray(r.plans)) r.plans = [];
+        if (typeof r._planSeq !== 'number') r._planSeq = r.plans.length + 1;
         if (!Array.isArray(r.manager_user_ids)) r.manager_user_ids = [];
       }
       for (const r of st.reservations) {
@@ -403,6 +439,7 @@ async function handler(req, res) {
               return send(res, 422, o);
             }
             rest._pv = (rest._pv || 0) + 1;
+            rest._rev = (rest._rev || 0) + 1;
             const p = { policy_version: rest._pv, effective_from: b.effective_from, slot_minutes: b.slot_minutes, reservation_duration_minutes: b.reservation_duration_minutes, cancellation_cutoff_minutes: b.cancellation_cutoff_minutes, opening_hours: b.opening_hours, capacities: b.capacities };
             (rest.policies ||= []).push(p);
             const o = { ...p };
@@ -523,6 +560,7 @@ async function handler(req, res) {
           if (cutoffPassed(r.accepted_terms.cancellation_cutoff_minutes, r.startMs)) return err(res, 409, 'cutoff_passed');
           r.status = 'cancelled';
           r.revision += 1;
+          getRest(r.restaurant_id)._rev = (getRest(r.restaurant_id)._rev || 0) + 1;
           pushHistory(r, 'cancelled', []);
           bumpSeriesFor(r.id, false, true);
           return send(res, 200, resShape(r));
@@ -542,6 +580,286 @@ async function handler(req, res) {
           const rr = applyPatch(r, b);
           if (rr.status) return err(res, rr.status, rr.code);
           return send(res, 200, resShape(r));
+        });
+      }
+    }
+    {
+      const mA = /^\/restaurants\/([^/]+)\/replans\/([^/]+)\/apply$/.exec(path);
+      if (method === 'POST' && mA) {
+        const rest = getRest(decodeURIComponent(mA[1]));
+        if (!rest) return err(res, 404, 'not_found');
+        const u = needAuth(); if (!u) return;
+        if (!(rest.manager_user_ids || []).includes(u.id)) return err(res, 403, 'forbidden');
+        const key = req.headers['idempotency-key'];
+        if (key === undefined || key === null || String(key).length === 0) return err(res, 400, 'missing_idempotency_key');
+        if (String(key).length > 255) return err(res, 422, 'validation_failed');
+        const raw = await readBody(req);
+        let b; try { b = raw ? JSON.parse(raw) : undefined; } catch { return err(res, 400, 'malformed_request'); }
+        if (typeof b !== 'object' || b === null || Array.isArray(b)) return err(res, 400, 'malformed_request');
+        return withLock(async () => {
+          const plan = (rest.plans || []).find(p => p.plan_id === decodeURIComponent(mA[2]));
+          if (!plan) return err(res, 404, 'not_found');
+          const uk = (S.idem[u.id] ||= {});
+          const cb = canon(b);
+          const e = uk[key];
+          if (plan.applied) {
+            if (e && e.method === 'POST' && e.path === path && e.body === cb && e.status < 400) return send(res, 200, e.resp);
+            return err(res, 409, 'plan_already_applied');
+          }
+          if (e && e.method === 'POST' && e.path === path && e.body === cb) {
+            if (e.status >= 400) { delete uk[key]; }
+            else return send(res, 200, e.resp);
+          } else if (e && e.method === 'POST' && e.path === path && e.body !== cb) return err(res, 409, 'idempotency_key_reuse');
+          else if (e && e.status >= 400) { delete uk[key]; }
+          if ((rest._rev || 0) !== plan.revAtPreview) return err(res, 409, 'stale_plan');
+          // atomic apply
+          (rest.closures ||= []).push({ table_id: plan.closure.table_id, from: plan.closure.from, to: plan.closure.to, fromMs: plan.fromMs, toMs: plan.toMs });
+          const byRef = {};
+          for (const a of plan.assignments) byRef[a.reference] = a.table_ids;
+          const affectedSeries = new Set();
+          const cons = [];
+          for (const a of plan.assignments) {
+            const r = S.reservations.find(x => x.reference === a.reference);
+            cons.push(r);
+            const cur = resTables(r);
+            if (!sameSet(cur, a.table_ids)) {
+              const pairInv = cur.length === 2 || a.table_ids.length === 2;
+              const ch = pairInv ? [{ field: 'table_ids', from: canonPair(rest, cur.length === 2 ? cur : cur), to: a.table_ids.length === 2 ? canonPair(rest, a.table_ids) : a.table_ids }] : [{ field: 'table_id', from: cur[0], to: a.table_ids[0] }];
+              r.table_ids = a.table_ids.slice(); r.table_id = a.table_ids.length === 1 ? a.table_ids[0] : undefined;
+              r.revision += 1;
+              const seq = (r.history || []).length + 1;
+              (r.history ||= []).push({ seq, at: fmtUTC(Date.now()), event: 'reassigned', changes: ch, plan_id: plan.plan_id, revision: r.revision, accepted_terms: r.accepted_terms });
+              for (const s of S.series) if (s.occurrences.some(o => o.reservation_id === r.id)) affectedSeries.add(s);
+            }
+          }
+          rest._rev = (rest._rev || 0) + 1;
+          for (const s of affectedSeries) s.revision += 1;
+          plan.applied = true;
+          const o = { plan_id: plan.plan_id, restaurant_revision: rest._rev, reservations: cons.map(resShape) };
+          uk[key] = { method: 'POST', path, body: cb, status: 201, resp: o };
+          plan.applyResp = o;
+          return send(res, 201, o);
+        });
+      }
+      const mP = /^\/restaurants\/([^/]+)\/replans$/.exec(path);
+      if (method === 'POST' && mP) {
+        const rest = getRest(decodeURIComponent(mP[1]));
+        if (!rest) return err(res, 404, 'not_found');
+        const u = needAuth(); if (!u) return;
+        if (!(rest.manager_user_ids || []).includes(u.id)) return err(res, 403, 'forbidden');
+        const key = req.headers['idempotency-key'];
+        if (key === undefined || key === null || String(key).length === 0) return err(res, 400, 'missing_idempotency_key');
+        if (String(key).length > 255) return err(res, 422, 'validation_failed');
+        const raw = await readBody(req);
+        let b; try { b = raw ? JSON.parse(raw) : undefined; } catch { return err(res, 400, 'malformed_request'); }
+        if (typeof b !== 'object' || b === null || Array.isArray(b)) return err(res, 400, 'malformed_request');
+        return withLock(async () => {
+          const uk = (S.idem[u.id] ||= {});
+          const cb = canon(b);
+          const e = uk[key];
+          if (e && e.method === 'POST' && e.path === path && e.body === cb) {
+            if (e.status >= 400) { delete uk[key]; }
+            else return send(res, 200, e.resp);
+          } else if (e && e.method === 'POST' && e.path === path && e.body !== cb) return err(res, 409, 'idempotency_key_reuse');
+          else if (e && e.status >= 400) { delete uk[key]; }
+          const fail = (status, code) => { const o = { error: { code, message: code } }; uk[key] = { method: 'POST', path, body: cb, status, resp: o, fail: true }; send(res, status, o); };
+          if (typeof b.table_id !== 'string') {
+            if (b.table_id === undefined) return fail(422, 'validation_failed');
+            return err(res, 400, 'malformed_request');
+          }
+          if (!rest.tables.some(t => t.id === b.table_id)) return err(res, 404, 'not_found');
+          const fMs = parseInstantStrict(b.from), tMs = parseInstantStrict(b.to);
+          if (fMs === null || tMs === null || !(fMs < tMs)) return fail(422, 'validation_failed');
+          const durOf = r => resDur(r);
+          const considered = S.reservations.filter(r => r.restaurant_id === rest.id && r.status === 'confirmed' && (r.startMs < tMs && fMs < r.startMs + durOf(r) * 60000)).sort((a, b2) => a.reference < b2.reference ? -1 : 1);
+          if (rest.tables.length > 6 || (rest.combinable || []).length > 4 || considered.length > 6) return fail(422, 'planning_limit');
+          // build options
+          const infos = considered.map(r => {
+            const terms = r.accepted_terms;
+            const opts = optionList(rest, terms, r.party_size).filter(o => {
+              for (const tid of o.ids) if (closureBlocksTable(rest, tid, r.startMs, durOf(r), fMs, tMs, b.table_id)) return false;
+              // fixed bookings conflict
+              for (const o2 of S.reservations) {
+                if (o2.status !== 'confirmed' || o2.id === r.id || o2.restaurant_id !== rest.id) continue;
+                if (considered.some(c => c.id === o2.id)) continue;
+                if (!o2.table_ids && !o2.table_id) continue;
+                const ot = resTables(o2);
+                if (!ot.some(t => o.ids.includes(t))) continue;
+                if (overlap(r.startMs, durOf(r), o2.startMs, resDur(o2))) return false;
+              }
+              return true;
+            });
+            return { r, opts, cur: resTables(r) };
+          });
+          // DFS search
+          let best = null;
+          const chosen = new Array(infos.length);
+          const capOf = (info, o) => o.cap;
+          function isBetter(cand, cur) {
+            if (!cur) return true;
+            if (cand.moved !== cur.moved) return cand.moved < cur.moved;
+            if (cand.unused !== cur.unused) return cand.unused < cur.unused;
+            for (let i = 0; i < cand.ranks.length; i++) if (cand.ranks[i] !== cur.ranks[i]) return cand.ranks[i] < cur.ranks[i];
+            return false;
+          }
+          function dfs(i, moved, unused, ranks) {
+            if (best && moved > best.moved) return;
+            if (i === infos.length) {
+              const cand = { moved, unused, ranks: ranks.slice(), pick: chosen.slice() };
+              if (isBetter(cand, best)) best = cand;
+              return;
+            }
+            const info = infos[i];
+            for (let k = 0; k < info.opts.length; k++) {
+              const o = info.opts[k];
+              // pairwise conflict with chosen
+              let ok = true;
+              for (let j = 0; j < i; j++) {
+                const oj = infos[j].opts[chosen[j]];
+                if (oj.ids.some(t => o.ids.includes(t)) && overlap(info.r.startMs, durOf(info.r), infos[j].r.startMs, durOf(infos[j].r))) { ok = false; break; }
+              }
+              if (!ok) continue;
+              const ch = !sameSet(o.ids, info.cur);
+              chosen[i] = k;
+              ranks[i] = k;
+              dfs(i + 1, moved + (ch ? 1 : 0), unused + (o.cap - info.r.party_size), ranks);
+            }
+          }
+          // if any booking has zero options -> infeasible
+          if (infos.some(x => !x.opts.length)) {
+            const o = { error: { code: 'no_feasible_plan', message: 'no_feasible_plan' } };
+            uk[key] = { method: 'POST', path, body: cb, status: 409, resp: o, fail: true };
+            return send(res, 409, o);
+          }
+          dfs(0, 0, 0, new Array(infos.length).fill(0));
+          if (!best) {
+            const o = { error: { code: 'no_feasible_plan', message: 'no_feasible_plan' } };
+            uk[key] = { method: 'POST', path, body: cb, status: 409, resp: o, fail: true };
+            return send(res, 409, o);
+          }
+          const pid = 'plan_' + (rest._planSeq++);
+          const assignments = infos.map((info, i) => {
+            const o = info.opts[best.pick[i]];
+            return { reference: info.r.reference, table_ids: o.ids.slice(), changed: !sameSet(o.ids, info.cur) };
+          });
+          const plan = { plan_id: pid, restaurant_id: rest.id, revAtPreview: (rest._rev || 0), closure: { table_id: b.table_id, from: b.from, to: b.to }, fromMs: fMs, toMs: tMs, assignments, moved_count: best.moved, unused_seats: best.unused, applied: false };
+          (rest.plans ||= []).push(plan);
+          const o = { plan_id: pid, restaurant_revision: (rest._rev || 0), closure: { table_id: b.table_id, from: b.from, to: b.to }, assignments, moved_count: best.moved, unused_seats: best.unused };
+          uk[key] = { method: 'POST', path, body: cb, status: 201, resp: o };
+          return send(res, 201, o);
+        });
+      }
+    }
+    {
+      const mS = /^\/series\/([^/]+)\/amend$/.exec(path);
+      if (method === 'POST' && mS) {
+        const raw = await readBody(req);
+        let b; try { b = raw ? JSON.parse(raw) : undefined; } catch { return err(res, 400, 'malformed_request'); }
+        if (typeof b !== 'object' || b === null || Array.isArray(b)) return err(res, 400, 'malformed_request');
+        const u = authUser(req); if (!u) return err(res, 401, 'unauthenticated');
+        const key = req.headers['idempotency-key'];
+        if (key === undefined || key === null || String(key).length === 0) return err(res, 400, 'missing_idempotency_key');
+        if (String(key).length > 255) return err(res, 422, 'validation_failed');
+        return withLock(async () => {
+          const s = S.series.find(x => x.series_id === decodeURIComponent(mS[1]));
+          if (!s || s.user_id !== u.id) return err(res, 404, 'not_found');
+          const uk = (S.idem[u.id] ||= {});
+          const cb = canon(b);
+          const e = uk[key];
+          if (e && e.method === 'POST' && e.path === path && e.body === cb) {
+            if (e.status >= 400) { delete uk[key]; }
+            else return send(res, 200, e.resp);
+          } else if (e && e.method === 'POST' && e.path === path && e.body !== cb) return err(res, 409, 'idempotency_key_reuse');
+          else if (e && e.status >= 400) { delete uk[key]; }
+          const fail = (status, code) => { const o = { error: { code, message: code } }; uk[key] = { method: 'POST', path, body: cb, status, resp: o, fail: true }; send(res, status, o); };
+          const isInt = v => typeof v === 'number' && Number.isInteger(v);
+          if (!isInt(b.expected_revision) || b.expected_revision < 1) return fail(422, 'validation_failed');
+          if (!isInt(b.from_index) || b.from_index < 0 || b.from_index > s.occurrences.length - 1) return fail(422, 'validation_failed');
+          if (typeof b.local_time !== 'string' || !/^(\d{2}):(\d{2})$/.test(b.local_time)) return fail(422, 'validation_failed');
+          const hh = +b.local_time.slice(0, 2), mm = +b.local_time.slice(3, 5);
+          if (hh > 23 || mm > 59) return fail(422, 'validation_failed');
+          if (b.expected_revision !== s.revision) return fail(409, 'stale_revision');
+          const rest = getRest(s.restaurant_id);
+          const occByIdx = [...s.occurrences].sort((a, c) => a.index - c.index);
+          const elig = occByIdx.filter(o => o.index >= b.from_index && !o.exception && (S.reservations.find(r => r.id === o.reservation_id) || {}).status !== 'cancelled');
+          // compute plans
+          const plans = [];
+          for (const o of elig) {
+            const r = S.reservations.find(x => x.id === o.reservation_id);
+            const sched = o.schedDate || r.starts_at_local.slice(0, 10);
+            const nl = `${sched}T${b.local_time}`;
+            if (nl === r.starts_at_local) { plans.push({ o, r, noop: true }); continue; }
+            plans.push({ o, r, noop: false, nl, sched });
+          }
+          // validate each real change; collect errors
+          const nonOcc = [], occConf = [];
+          const targets = [];
+          for (const p of plans) {
+            if (p.noop) continue;
+            const { r, nl, sched } = p;
+            if (cutoffPassed(r.accepted_terms.cancellation_cutoff_minutes, r.startMs)) { nonOcc.push({ idx: p.o.index, status: 409, code: 'cutoff_passed' }); continue; }
+            const dp = parseLocalStrict(nl);
+            if (!dp) { nonOcc.push({ idx: p.o.index, status: 422, code: 'validation_failed' }); continue; }
+            const cfg = selectPolicy(rest, sched);
+            const ids = resTables(r);
+            const cap = comboCapCfg(cfg, rest, ids);
+            if (r.party_size > cap) { nonOcc.push({ idx: p.o.index, status: 422, code: 'party_exceeds_capacity' }); continue; }
+            const inst = resolveLocal(rest.timezone, dp.y, dp.mo, dp.d, dp.h, dp.mi);
+            if (!inst.length) { nonOcc.push({ idx: p.o.index, status: 422, code: 'invalid_local_time' }); continue; }
+            const wd = weekdayLocal(rest.timezone, dp.y, dp.mo, dp.d);
+            const oh = cfg.opening_hours.find(x => x.weekday === wd);
+            const tmin = dp.h * 60 + dp.mi;
+            if (!oh || tmin < hm(oh.opens) || tmin + cfg.reservation_duration_minutes > hm(oh.closes)) { nonOcc.push({ idx: p.o.index, status: 422, code: 'outside_opening_hours' }); continue; }
+            if ((tmin - hm(oh.opens)) % cfg.slot_minutes !== 0) { nonOcc.push({ idx: p.o.index, status: 422, code: 'not_on_slot_grid' }); continue; }
+            p.cfg = cfg; p.startMs = inst[0];
+            targets.push(p);
+          }
+          if (nonOcc.length) { nonOcc.sort((a, c) => a.idx - c.idx); return fail(nonOcc[0].status, nonOcc[0].code); }
+          // occupancy: conflicts with unchanged occurrences, other bookings, closures
+          const eligIds = new Set(elig.map(o => o.reservation_id));
+          const allOccRes = s.occurrences.map(o => S.reservations.find(x => x.id === o.reservation_id));
+          for (const p of targets) {
+            const ids = resTables(p.r);
+            if (setBusy(rest, ids, p.startMs, p.cfg.reservation_duration_minutes, p.r.id)) {
+              // check if blocker is within eligible moving set (would move away) — still conflict per spec? Spec says must not conflict with unchanged occurrences, other bookings or closures. Moving targets among themselves could share tables at different times; setBusy includes other targets' old positions which is wrong. Do precise check:
+            }
+          }
+          // precise occupancy check
+          let conflict = false;
+          for (const p of targets) {
+            const ids = resTables(p.r);
+            // closures
+            for (const tid of ids) if (closureBlocksTable(rest, tid, p.startMs, p.cfg.reservation_duration_minutes, 0, 0, null)) { conflict = true; break; }
+            if (conflict) break;
+            // other bookings + unchanged occurrences (non-eligible or noop or other series)
+            for (const o2 of S.reservations) {
+              if (o2.status !== 'confirmed' || o2.id === p.r.id || o2.restaurant_id !== rest.id) continue;
+              // if o2 is another target, use its new position
+              const t2 = targets.find(t => t.r.id === o2.id);
+              const o2ms = t2 ? t2.startMs : o2.startMs;
+              const o2dur = t2 ? t2.cfg.reservation_duration_minutes : resDur(o2);
+              if (!resTables(o2).some(t => ids.includes(t))) continue;
+              if (overlap(p.startMs, p.cfg.reservation_duration_minutes, o2ms, o2dur)) { conflict = true; break; }
+            }
+            if (conflict) break;
+          }
+          if (conflict) return fail(409, 'table_unavailable');
+          let anyReal = false;
+          for (const p of targets) {
+            const r = p.r;
+            const oldLoc = r.starts_at_local;
+            const changes = [{ field: 'starts_at_local', from: oldLoc, to: p.nl }];
+            r.starts_at_local = p.nl; r.startMs = p.startMs;
+            r.accepted_terms = termsOf(p.cfg);
+            r.revision += 1;
+            anyReal = true;
+            pushHistory(r, 'changed', changes);
+          }
+          // correct change entries (need old loc)
+          if (anyReal) { s.revision += 1; rest._rev = (rest._rev || 0) + 1; }
+          const o = seriesShape(s);
+          uk[key] = { method: 'POST', path, body: cb, status: 201, resp: o };
+          return send(res, 201, o);
         });
       }
     }
@@ -585,7 +903,7 @@ function applyPatch(r, b) {
   r.accepted_terms = termsOf(cfg);
   r.revision += 1;
   const rest2 = getRest(r.restaurant_id);
-  rest2._rev = (rest2._rev || 1) + 1;
+  rest2._rev = (rest2._rev || 0) + 1;
   pushHistory(r, 'changed', changes);
   bumpSeriesFor(r.id, true, false);
   return {};
@@ -623,6 +941,7 @@ function createRes(b, u, finish, fail) {
   const r = { id: 'res_' + (S.seqRes++), reference: newRef(), restaurant_id, table_id: idsF.length === 1 ? idsF[0] : undefined, table_ids: idsF, party_size, status: 'confirmed', starts_at_local, startMs: c.startMs, createdMs: Date.now(), user_id: u.id, revision: 1, history: [] };
   r.accepted_terms = termsOf(cfg);
   S.reservations.push(r);
+  rest._rev = (rest._rev || 0) + 1;
   pushHistory(r, 'created', createdChanges(idsF, starts_at_local, party_size, idsF.length === 2));
   return finish(201, resShape(r));
 }
@@ -655,18 +974,18 @@ function createSeries(b, u, finish, fail, path) {
     plans.push({ loc, cfg, c, ids: idsC });
   }
   const sid = 'ser_' + (S.seqSeries++);
-  const occs = [{ index: 0, reservation_id: anchor.id, exception: false }];
+  const occs = [{ index: 0, reservation_id: anchor.id, exception: false, schedDate: anchor.starts_at_local.slice(0, 10) }];
   for (let i = 0; i < plans.length; i++) {
     const p = plans[i];
     const r = { id: 'res_' + (S.seqRes++), reference: newRef(), restaurant_id: rest.id, table_id: p.ids.length === 1 ? p.ids[0] : undefined, table_ids: p.ids, party_size: anchor.party_size, status: 'confirmed', starts_at_local: p.loc, startMs: p.c.startMs, createdMs: Date.now(), user_id: u.id, revision: 1, history: [] };
     r.accepted_terms = termsOf(p.cfg);
     S.reservations.push(r);
     pushHistory(r, 'created', createdChanges(p.ids, p.loc, anchor.party_size, p.ids.length === 2));
-    occs.push({ index: i + 1, reservation_id: r.id, exception: false });
+    occs.push({ index: i + 1, reservation_id: r.id, exception: false, schedDate: p.loc.slice(0, 10) });
   }
   const s = { series_id: sid, revision: 1, interval_weeks, user_id: u.id, restaurant_id: rest.id, occurrences: occs };
   S.series.push(s);
-  rest._rev = (rest._rev || 1) + 1;
+  rest._rev = (rest._rev || 0) + 1;
   return finish(201, seriesShape(s));
 }
 function doMoves(b, u, finish, fail) {
@@ -763,7 +1082,7 @@ function doMoves(b, u, finish, fail) {
     pushHistory(t.r, 'changed', changes);
     bumpSeriesFor(t.r.id, true, false);
   }
-  if (anyReal) rest._rev = (rest._rev || 1) + 1;
+  if (anyReal) rest._rev = (rest._rev || 0) + 1;
   return finish(201, { reservations: rows.map(resShape) });
 }
 const port = +(process.env.PORT || 8080);
