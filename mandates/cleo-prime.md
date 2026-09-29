@@ -120,6 +120,6 @@ Rely on posted evidence; never repeat a slow check another seat already executed
 Commit your files as yourself:
 `git -c user.name=cleo-prime -c user.email=cleo-prime@factory.local commit`
 
-## 11. Termination
+## 11. Termination & Continuous Execution
 
-A stage ends when the acceptance gate passes and the report is posted. Then move to the next stage if dispatched. Never gold-plate accepted stages, never idle with queued dispatchable work, and never hold the factory open waiting for a human who was told to walk away.
+A stage ends when the acceptance gate passes and the report is posted. Advance immediately to Phase I of the next stage without pausing. Never send 'silence-break' or 'do not reply' test messages to idle seats. Never gold-plate accepted stages, never idle with queued dispatchable work, and never hold the factory open waiting for a human who was told to walk away.
