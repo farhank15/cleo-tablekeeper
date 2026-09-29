@@ -90,17 +90,31 @@ function hm(s) { const m = /^(\d{2}):(\d{2})$/.exec(s || ''); if (!m) return nul
 function getRest(id) { return S.restaurants.find(r => r.id === id); }
 function resShape(r) {
   const rest = getRest(r.restaurant_id);
-  return { reservation_id: r.id, reference: r.reference, restaurant_id: r.restaurant_id, table_id: r.table_id, party_size: r.party_size, status: r.status, starts_at_local: r.starts_at_local, starts_at: fmtRFC(rest.timezone, r.startMs), ends_at: fmtRFC(rest.timezone, r.startMs + rest.reservation_duration_minutes * 60000), created_at: fmtUTC(r.createdMs) };
+  const ids = r.table_ids || (r.table_id ? [r.table_id] : []);
+  const o = { reservation_id: r.id, reference: r.reference, restaurant_id: r.restaurant_id, table_ids: ids, party_size: r.party_size, status: r.status, starts_at_local: r.starts_at_local, starts_at: fmtRFC(rest.timezone, r.startMs), ends_at: fmtRFC(rest.timezone, r.startMs + rest.reservation_duration_minutes * 60000), created_at: fmtUTC(r.createdMs) };
+  if (ids.length === 1) o.table_id = ids[0];
+  return o;
 }
 function overlap(aStart, aDur, bStart, bDur) { return aStart < bStart + bDur * 60000 && bStart < aStart + aDur * 60000; }
+function resTables(r) { return r.table_ids || (r.table_id ? [r.table_id] : []); }
+function setBusy(rest, tableIds, startMs, excludeId) {
+  for (const tid of tableIds) if (tableBusy(rest, tid, startMs, excludeId)) return true;
+  return false;
+}
 function tableBusy(rest, tableId, startMs, excludeId) {
   for (const r of S.reservations) {
-    if (r.status !== 'confirmed' || r.table_id !== tableId || r.id === excludeId) continue;
-    const rr = getRest(r.restaurant_id);
+    if (r.status !== 'confirmed' || r.id === excludeId) continue;
     if (r.restaurant_id !== rest.id) continue;
+    if (!resTables(r).includes(tableId)) continue;
+    const rr = getRest(r.restaurant_id);
     if (overlap(startMs, rest.reservation_duration_minutes, r.startMs, rr.reservation_duration_minutes)) return true;
   }
   return false;
+}
+function comboCap(rest, ids) { return ids.reduce((s, t) => s + rest.tables.find(x => x.id === t).capacity, 0); }
+function pairAllowed(rest, ids) {
+  if (ids.length !== 2) return false;
+  return (rest.combinable || []).some(p => p[0] === ids[0] && p[1] === ids[1]);
 }
 function slotList(rest, dateStr, y, mo, d) {
   const wd = weekdayLocal(rest.timezone, y, mo, d);
@@ -119,15 +133,22 @@ function slotList(rest, dateStr, y, mo, d) {
   return out;
 }
 // validate booking target; returns {ok, status, code} or {ok, startMs}
-function checkBooking(rest, tableId, locStr, party, excludeId) {
-  const table = rest.tables.find(t => t.id === tableId);
+function checkBooking(rest, tableIds, locStr, party, excludeId) {
+  // table set validation (R-2.17)
+  if (!Array.isArray(tableIds) || tableIds.length < 1) return { status: 422, code: 'validation_failed' };
+  if (tableIds.some(t => typeof t !== 'string')) return { status: 400, code: 'malformed_request' };
+  if (new Set(tableIds).size !== tableIds.length) return { status: 422, code: 'validation_failed' };
+  if (tableIds.length > 2) return { status: 422, code: 'combination_not_allowed' };
+  for (const t of tableIds) if (!rest.tables.some(x => x.id === t)) return { status: 404, code: 'not_found' };
+  if (tableIds.length === 2 && !pairAllowed(rest, tableIds)) return { status: 422, code: 'combination_not_allowed' };
+  const cap = comboCap(rest, tableIds);
   // party checks
   if (typeof party === 'string' || typeof party === 'boolean' || party === null) return { status: 422, code: 'validation_failed' };
   if (typeof party !== 'number' || !Number.isInteger(party) || party < 1) {
     if (typeof party !== 'number') return { status: 400, code: 'malformed_request' };
     return { status: 422, code: 'validation_failed' };
   }
-  if (party > table.capacity) return { status: 422, code: 'party_exceeds_capacity' };
+  if (party > cap) return { status: 422, code: 'party_exceeds_capacity' };
   // local parse
   if (typeof locStr !== 'string' || !parseLocalStrict(locStr)) return { status: 422, code: typeof locStr === 'string' ? 'validation_failed' : 'malformed_request' };
   // starts_at must be bare format (already), else 422
@@ -145,18 +166,33 @@ function checkBooking(rest, tableId, locStr, party, excludeId) {
   const tmin = h * 60 + mi;
   if (tmin < opens || tmin + rest.reservation_duration_minutes > closes) return { status: 422, code: 'outside_opening_hours' };
   if ((tmin - opens) % rest.slot_minutes !== 0) return { status: 422, code: 'not_on_slot_grid' };
-  if (tableBusy(rest, tableId, startMs, excludeId)) return { status: 409, code: 'table_unavailable' };
+  if (setBusy(rest, tableIds, startMs, excludeId)) return { status: 409, code: 'table_unavailable' };
   return { startMs };
 }
 function cutoffPassed(rest, startMs) { return Date.now() > startMs - rest.cancellation_cutoff_minutes * 60000; }
 function hashPw(p) { return 'scrypt:' + crypto.scryptSync(p, 'tablekeeper-salt', 32).toString('hex'); }
 function newRef() { const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; let r; do { r = ''; for (let i = 0; i < 6; i++) r += A[crypto.randomInt(A.length)]; } while (S.reservations.some(x => x.reference === r)); return r; }
 
-// ---------- server ----------
+// ---------- server (UI static: sentinel-owned, no business logic) ----------
+const fs = require('fs'), pathLib = require('path');
+function serveUI(path, method, res) {
+  if (method !== 'GET') return false;
+  const pub = pathLib.join(__dirname, '..', 'public');
+  if (['/', '/signup', '/login', '/lookup'].includes(path)) {
+    try { const b = fs.readFileSync(pathLib.join(pub, 'index.html')); res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': b.length }); res.end(b); } catch { res.writeHead(503); res.end('UI missing'); }
+    return true;
+  }
+  if (path === '/styles.css' || path === '/app.js') {
+    try { const b = fs.readFileSync(pathLib.join(pub, path.slice(1))); res.writeHead(200, { 'Content-Type': path.endsWith('.css') ? 'text/css' : 'text/javascript', 'Content-Length': b.length }); res.end(b); } catch { res.writeHead(404); res.end(''); }
+    return true;
+  }
+  return false;
+}
 async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname, method = req.method;
   try {
+    if (serveUI(path, method, res)) return;
     if (method === 'GET' && path === '/health') return send(res, 200, { status: 'ok' });
     if (method === 'POST' && path === '/_test/reset') {
       const raw = await readBody(req);
@@ -169,18 +205,37 @@ async function handler(req, res) {
       for (const r of (f.restaurants || [])) {
         if (!idOk(r.id)) return err(res, 422, 'validation_failed');
         for (const t of (r.tables || [])) { if (!idOk(t.id)) return err(res, 422, 'validation_failed'); }
+        // R-2.14: combinable = pairs only of known tables
+        if (r.combinable !== undefined) {
+          if (!Array.isArray(r.combinable)) return err(res, 422, 'validation_failed');
+          const tids = new Set((r.tables || []).map(t => t.id));
+          for (const p of r.combinable) {
+            if (!Array.isArray(p) || p.length !== 2) return err(res, 422, 'validation_failed');
+            if (typeof p[0] !== 'string' || typeof p[1] !== 'string' || p[0] === p[1]) return err(res, 422, 'validation_failed');
+            if (!tids.has(p[0]) || !tids.has(p[1])) return err(res, 422, 'validation_failed');
+          }
+        }
       }
       for (const r of (f.reservations || [])) {
-        if (!idOk(r.id) || !refOk(r.reference) || !idOk(r.restaurant_id) || !idOk(r.table_id) || !idOk(r.user_id)) return err(res, 422, 'validation_failed');
+        if (!idOk(r.id) || !refOk(r.reference) || !idOk(r.restaurant_id) || !idOk(r.user_id)) return err(res, 422, 'validation_failed');
+        const hasS = r.table_id !== undefined, hasP = r.table_ids !== undefined;
+        if ((hasS ? 1 : 0) + (hasP ? 1 : 0) !== 1) return err(res, 422, 'validation_failed');
+        if (hasS && !idOk(r.table_id)) return err(res, 422, 'validation_failed');
+        if (hasP) {
+          if (!Array.isArray(r.table_ids) || r.table_ids.length < 1 || r.table_ids.length > 2) return err(res, 422, 'validation_failed');
+          if (r.table_ids.some(t => !idOk(t)) || new Set(r.table_ids).size !== r.table_ids.length) return err(res, 422, 'validation_failed');
+        }
+        if (r.status !== undefined && r.status !== 'confirmed' && r.status !== 'cancelled') return err(res, 422, 'validation_failed');
       }
       const ns = fresh();
       for (const u of (f.users || [])) ns.users.push({ id: u.id, email: u.email, pw: hashPw(u.password), display_name: u.display_name, tokens: [] });
-      for (const r of (f.restaurants || [])) ns.restaurants.push(r);
+      for (const r of (f.restaurants || [])) { if (r.combinable === undefined) r.combinable = []; ns.restaurants.push(r); }
       for (const r of (f.reservations || [])) {
         const rest = ns.restaurants.find(x => x.id === r.restaurant_id);
         const p = parseLocalStrict(r.starts_at_local);
         const inst = p && rest ? resolveLocal(rest.timezone, p.y, p.mo, p.d, p.h, p.mi) : [];
-        ns.reservations.push({ id: r.id, reference: r.reference, restaurant_id: r.restaurant_id, table_id: r.table_id, party_size: r.party_size, status: 'confirmed', starts_at_local: r.starts_at_local, startMs: inst.length ? inst[0] : 0, createdMs: Date.now(), user_id: r.user_id });
+        const ids = r.table_ids !== undefined ? r.table_ids : [r.table_id];
+        ns.reservations.push({ id: r.id, reference: r.reference, restaurant_id: r.restaurant_id, table_id: ids.length === 1 ? ids[0] : undefined, table_ids: ids, party_size: r.party_size, status: r.status || 'confirmed', starts_at_local: r.starts_at_local, startMs: inst.length ? inst[0] : 0, createdMs: Date.now(), user_id: r.user_id });
       }
       S = ns;
       return send(res, 204, null);
@@ -195,6 +250,9 @@ async function handler(req, res) {
       if (!b || b.track !== 'tablekeeper' || b.format_version !== 1 || typeof b.state !== 'object' || !b.state) return err(res, 422, 'validation_failed');
       const st = b.state;
       if (!Array.isArray(st.users) || !Array.isArray(st.restaurants) || !Array.isArray(st.reservations)) return err(res, 422, 'validation_failed');
+      // R-2.22/R-2.13: accept stage-1 exports — normalize missing combinable/table_ids
+      for (const r of st.restaurants) if (r.combinable === undefined) r.combinable = [];
+      for (const r of st.reservations) if (r.table_ids === undefined && r.table_id !== undefined) r.table_ids = [r.table_id];
       S = { users: st.users, restaurants: st.restaurants, reservations: st.reservations, idem: st.idem || {}, seqUser: st.seqUser || 1, seqRes: st.seqRes || 1 };
       return send(res, 204, null);
     }
@@ -237,7 +295,14 @@ async function handler(req, res) {
       if (ps < 1) return err(res, 422, 'validation_failed');
       const rest = getRest(rid); if (!rest) return err(res, 404, 'not_found');
       const dp = parseDateStrict(date); if (!dp) return err(res, 422, 'validation_failed');
-      const slots = slotList(rest, date, dp.y, dp.mo, dp.d).map(s => ({ starts_at_local: s.loc, starts_at: fmtRFC(rest.timezone, s.ms), available_table_ids: rest.tables.filter(t => t.capacity >= ps && !tableBusy(rest, t.id, s.ms, null)).map(t => t.id) }));
+      const slots = slotList(rest, date, dp.y, dp.mo, dp.d).map(s => {
+        const availSingles = rest.tables.filter(t => t.capacity >= ps && !tableBusy(rest, t.id, s.ms, null)).map(t => t.id);
+        const opts = rest.tables.filter(t => t.capacity >= ps && !tableBusy(rest, t.id, s.ms, null)).map(t => ({ table_ids: [t.id], capacity: t.capacity }));
+        for (const p of (rest.combinable || [])) {
+          if (comboCap(rest, p) >= ps && !setBusy(rest, p, s.ms, null)) opts.push({ table_ids: [p[0], p[1]], capacity: comboCap(rest, p) });
+        }
+        return { starts_at_local: s.loc, starts_at: fmtRFC(rest.timezone, s.ms), available_table_ids: availSingles, available_options: opts };
+      });
       return send(res, 200, { restaurant_id: rid, date, timezone: rest.timezone, slots });
     }
     // idempotent writes
@@ -314,18 +379,21 @@ async function handler(req, res) {
           if (r.status === 'cancelled') return err(res, 409, 'reservation_cancelled');
           const rest = getRest(r.restaurant_id);
           if (cutoffPassed(rest, r.startMs)) return err(res, 409, 'cutoff_passed');
-          const nt = b.table_id !== undefined ? b.table_id : r.table_id;
+          const hasS = b.table_id !== undefined, hasP = b.table_ids !== undefined;
+          if (hasS && hasP) return err(res, 422, 'validation_failed');
+          const cur = resTables(r);
+          const nt = hasS ? b.table_id : (hasP ? b.table_ids : cur);
+          const ntArr = hasS ? [nt] : nt;
           const nl = b.starts_at_local !== undefined ? b.starts_at_local : r.starts_at_local;
           const np = b.party_size !== undefined ? b.party_size : r.party_size;
-          if (b.table_id !== undefined && typeof b.table_id !== 'string') return err(res, 400, 'malformed_request');
+          if (hasS && typeof b.table_id !== 'string') return err(res, 400, 'malformed_request');
+          if (hasP && !Array.isArray(b.table_ids)) return err(res, 400, 'malformed_request');
           if (b.starts_at_local !== undefined && typeof b.starts_at_local !== 'string') { if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(b.starts_at_local))) return err(res, 422, 'validation_failed'); return err(res, 400, 'malformed_request'); }
           if (b.party_size !== undefined && (typeof b.party_size === 'string' || typeof b.party_size === 'boolean' || b.party_size === null)) return err(res, 422, 'validation_failed');
           if (b.party_size !== undefined && typeof b.party_size !== 'number') return err(res, 400, 'malformed_request');
-          const trow = rest.tables.find(t => t.id === nt);
-          if (!trow) return err(res, 404, 'not_found');
-          const c = checkBooking(rest, nt, nl, np, r.id);
+          const c = checkBooking(rest, ntArr, nl, np, r.id);
           if (c.status) return err(res, c.status, c.code);
-          r.table_id = nt; r.starts_at_local = nl; r.party_size = np; r.startMs = c.startMs;
+          r.table_ids = ntArr; r.table_id = ntArr.length === 1 ? ntArr[0] : undefined; r.starts_at_local = nl; r.party_size = np; r.startMs = c.startMs;
           return send(res, 200, resShape(r));
         });
       }
@@ -335,9 +403,13 @@ async function handler(req, res) {
 }
 
 function createRes(b, u, finish, fail) {
-  const { restaurant_id, table_id, starts_at_local, party_size } = b;
-  if (restaurant_id === undefined || table_id === undefined || starts_at_local === undefined || party_size === undefined) return fail(422, 'validation_failed');
-  if (typeof restaurant_id !== 'string' || typeof table_id !== 'string') return fail(400, 'malformed_request');
+  const { restaurant_id, table_id, table_ids, starts_at_local, party_size } = b;
+  if (table_id !== undefined && table_ids !== undefined) return fail(422, 'validation_failed');
+  const ids = table_id !== undefined ? [table_id] : table_ids;
+  if (restaurant_id === undefined || ids === undefined || starts_at_local === undefined || party_size === undefined) return fail(422, 'validation_failed');
+  if (typeof restaurant_id !== 'string') return fail(400, 'malformed_request');
+  if (table_id !== undefined && typeof table_id !== 'string') return fail(400, 'malformed_request');
+  if (table_ids !== undefined && !Array.isArray(table_ids)) return fail(400, 'malformed_request');
   if (typeof starts_at_local !== 'string') { if (typeof starts_at_local === 'number' || typeof starts_at_local === 'boolean' || starts_at_local === null) { if (typeof party_size !== 'number') {} } return fail(typeof starts_at_local === 'string' ? 422 : (/^\d/.test('') ? 422 : 400), 'validation_failed'); }
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(starts_at_local) && typeof starts_at_local === 'string') {
     // could be invalid format -> 422
@@ -346,16 +418,10 @@ function createRes(b, u, finish, fail) {
   if (typeof party_size === 'string' || typeof party_size === 'boolean' || party_size === null) return fail(422, 'validation_failed');
   if (typeof party_size !== 'number') return fail(400, 'malformed_request');
   const rest = getRest(restaurant_id);
-  const table = rest && rest.tables.find(t => t.id === table_id);
-  if (!rest || !table || table && rest && table_id && getRest(restaurant_id) && !rest.tables.some(t => t.id === table_id)) return fail(404, 'not_found');
-  // unknown table in another restaurant -> 404
-  if (table_id && !rest.tables.some(t => t.id === table_id)) {
-    if (S.restaurants.some(r => r.tables.some(t => t.id === table_id))) return fail(404, 'not_found');
-    return fail(404, 'not_found');
-  }
-  const c = checkBooking(rest, table_id, starts_at_local, party_size, null);
+  if (!rest) return fail(404, 'not_found');
+  const c = checkBooking(rest, ids, starts_at_local, party_size, null);
   if (c.status) return fail(c.status, c.code);
-  const r = { id: 'res_' + (S.seqRes++), reference: newRef(), restaurant_id, table_id, party_size, status: 'confirmed', starts_at_local, startMs: c.startMs, createdMs: Date.now(), user_id: u.id };
+  const r = { id: 'res_' + (S.seqRes++), reference: newRef(), restaurant_id, table_id: ids.length === 1 ? ids[0] : undefined, table_ids: ids, party_size, status: 'confirmed', starts_at_local, startMs: c.startMs, createdMs: Date.now(), user_id: u.id };
   S.reservations.push(r);
   return finish(201, resShape(r), true);
 }
@@ -385,17 +451,24 @@ function doMoves(b, u, finish, fail) {
   // compute targets
   const targets = rows.map((r, i) => {
     const m = moves[i];
-    return { r, nt: m.table_id !== undefined ? m.table_id : r.table_id, nl: m.starts_at_local !== undefined ? m.starts_at_local : r.starts_at_local, np: m.party_size !== undefined ? m.party_size : r.party_size };
+    if (m.table_id !== undefined && m.table_ids !== undefined) return { r, bad: 422 };
+    const cur = resTables(r);
+    const nt = m.table_id !== undefined ? [m.table_id] : (m.table_ids !== undefined ? m.table_ids : cur);
+    return { r, nt, nl: m.starts_at_local !== undefined ? m.starts_at_local : r.starts_at_local, np: m.party_size !== undefined ? m.party_size : r.party_size };
   });
   for (const t of targets) {
-    if (t.nt !== undefined && typeof t.nt !== 'string') return fail(400, 'malformed_request');
+    if (t.bad) return fail(422, 'validation_failed');
+    if (!Array.isArray(t.nt)) return fail(400, 'malformed_request');
+    if (t.nt.some(x => typeof x !== 'string')) return fail(400, 'malformed_request');
     if (t.np !== undefined && (typeof t.np === 'string' || typeof t.np === 'boolean' || t.np === null)) return fail(422, 'validation_failed');
     if (typeof t.np !== 'number') return fail(400, 'malformed_request');
     if (t.nl !== undefined && typeof t.nl !== 'string') return fail(400, 'malformed_request');
-    if (!rest.tables.some(x => x.id === t.nt)) return fail(404, 'not_found');
+    if (t.nt.length < 1 || t.nt.length > 2) return fail(t.nt.length > 2 ? 422 : 422, t.nt.length > 2 ? 'combination_not_allowed' : 'validation_failed');
+    if (new Set(t.nt).size !== t.nt.length) return fail(422, 'validation_failed');
+    for (const x of t.nt) if (!rest.tables.some(y => y.id === x)) return fail(404, 'not_found');
+    if (t.nt.length === 2 && !pairAllowed(rest, t.nt)) return fail(422, 'combination_not_allowed');
     if (typeof t.np !== 'number' || !Number.isInteger(t.np) || t.np < 1) { if (typeof t.np !== 'number') return fail(400, 'malformed_request'); return fail(422, 'validation_failed'); }
-    const cap = rest.tables.find(x => x.id === t.nt).capacity;
-    if (t.np > cap) return fail(422, 'party_exceeds_capacity');
+    if (t.np > comboCap(rest, t.nt)) return fail(422, 'party_exceeds_capacity');
     if (!parseLocalStrict(t.nl)) return fail(422, t.nl && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t.nl) ? 'validation_failed' : (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t.nl || '') ? 'validation_failed' : 'validation_failed'));
     const { y, mo, d, h, mi } = parseLocalStrict(t.nl);
     const inst = resolveLocal(rest.timezone, y, mo, d, h, mi);
@@ -407,20 +480,22 @@ function doMoves(b, u, finish, fail) {
     if (!oh || tmin < hm(oh.opens) || tmin + rest.reservation_duration_minutes > hm(oh.closes)) return fail(422, 'outside_opening_hours');
     if ((tmin - hm(oh.opens)) % rest.slot_minutes !== 0) return fail(422, 'not_on_slot_grid');
   }
-  // overlap: among results + with unlisted
+  // overlap: among results (any shared table) + with unlisted
   const ids = new Set(rows.map(r => r.id));
+  const shares = (a, b) => a.some(x => b.includes(x));
   for (let i = 0; i < targets.length; i++) {
     for (let j = i + 1; j < targets.length; j++) {
-      if (targets[i].nt === targets[j].nt && overlap(targets[i].startMs, rest.reservation_duration_minutes, targets[j].startMs, rest.reservation_duration_minutes)) return fail(409, 'table_unavailable');
+      if (shares(targets[i].nt, targets[j].nt) && overlap(targets[i].startMs, rest.reservation_duration_minutes, targets[j].startMs, rest.reservation_duration_minutes)) return fail(409, 'table_unavailable');
     }
     // vs unlisted confirmed
     for (const o of S.reservations) {
-      if (o.status !== 'confirmed' || ids.has(o.id) || o.table_id !== targets[i].nt || o.restaurant_id !== rid) continue;
+      if (o.status !== 'confirmed' || ids.has(o.id) || o.restaurant_id !== rid) continue;
+      if (!shares(resTables(o), targets[i].nt)) continue;
       const rr = getRest(o.restaurant_id);
       if (overlap(targets[i].startMs, rest.reservation_duration_minutes, o.startMs, rr.reservation_duration_minutes)) return fail(409, 'table_unavailable');
     }
   }
-  for (const t of targets) { t.r.table_id = t.nt; t.r.starts_at_local = t.nl; t.r.party_size = t.np; t.r.startMs = t.startMs; }
+  for (const t of targets) { t.r.table_ids = t.nt; t.r.table_id = t.nt.length === 1 ? t.nt[0] : undefined; t.r.starts_at_local = t.nl; t.r.party_size = t.np; t.r.startMs = t.startMs; }
   return finish(201, { reservations: rows.map(resShape) }, true);
 }
 

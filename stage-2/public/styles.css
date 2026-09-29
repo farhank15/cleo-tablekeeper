@@ -1,0 +1,25 @@
+:root{--bg:#faf6ef;--surface:#ffffff;--primary:#9a5b26;--primary-d:#7c4719;--ink:#2b2118;--muted:#6f6156;--ok:#1f7a3d;--bad:#b3261e;--warn:#8a5a00;--unc:#5b4bc4;--radius:10px;--shadow:0 2px 10px rgba(60,40,20,.10)}
+*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:100%;overflow-x:hidden}
+.nav{display:flex;gap:12px;align-items:center;padding:10px 16px;background:var(--surface);box-shadow:var(--shadow);flex-wrap:wrap;max-width:100%}
+.nav nav{display:flex;gap:10px;flex-wrap:wrap}
+.brand{font-weight:700;color:var(--primary);text-decoration:none;font-size:1.2rem}
+main{padding:16px;max-width:960px;margin:0 auto;width:100%}
+.card{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;margin:12px 0}
+.form-grid{display:grid;gap:10px;grid-template-columns:1fr}
+@media(min-width:700px){.form-grid{grid-template-columns:1fr 1fr}}
+label{display:grid;gap:4px;font-weight:600}
+input,select,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #cbbfae;max-width:100%}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+button.primary{background:var(--primary);color:#fff;border-color:var(--primary-d)}
+button.primary:hover{background:var(--primary-d)}
+.grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+.slot{padding:10px;border:2px solid var(--primary);border-radius:8px;background:#fff;cursor:pointer;transition:background .15s,transform .15s}
+.slot:hover{background:#fdf0dd;transform:translateY(-1px)}
+.slot[data-available="false"]{border-color:#d8d0c4;color:var(--muted);background:#f1ede6;cursor:not-allowed}
+.slot.selected{border-color:var(--ok);background:#e7f5ea}
+.success{border-left:6px solid var(--ok)}
+#booking-error,[data-testid="booking-error"]:not([hidden]){border-left:6px solid var(--bad);background:#fdecea;padding:10px;border-radius:8px;color:var(--bad)}
+#booking-uncertain:not([hidden]){border-left:6px solid var(--unc);background:#eeeafa;padding:10px;border-radius:8px}
+#auth-error:not([hidden]),[data-testid="auth-error"]:not([hidden]){color:var(--bad);font-weight:600}
+#search-status{color:var(--muted);min-height:1.5em}
