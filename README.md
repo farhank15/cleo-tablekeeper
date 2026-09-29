@@ -2,122 +2,140 @@
 
 > *"In a true Dark Factory, the human is not a programmer holding the wrench; the human is the **Mandor** (Factory Supervisor & Systems Architect) who designs the factory floor, establishes the quality gates, assigns specialized machine seats, and switches on the power."*
 
-Autonomous software factory developed for the **WeAreDevelopers x BAND Hackathon: Dark Factory Challenge** (September 26 – October 5, 2026).
+An autonomous multi-agent software factory developed for the **WeAreDevelopers x BAND Hackathon: Dark Factory Challenge** (September 26 – October 5, 2026).
 
 ---
 
 ## 1. The Mandor Philosophy & Hackathon Thesis
 
-The core premise of the Dark Factory competition is **Lights-Out Software Engineering**: building a system of autonomous coding agents capable of taking a specification, planning the execution, implementing the solution, and rigorously verifying the invariants **without a single human steering prompt, debugging hint, or mid-flight approval**.
+The defining premise of the Dark Factory competition is **Lights-Out Autonomous Engineering**: deploying a collaborative band of autonomous coding agents capable of taking an unedited technical specification, establishing an atomic requirements ledger, implementing a robust full-stack solution, and verifying all invariants **with zero mid-flight human steering, debugging hints, or approval cycles**.
 
-### The Core Problem (Why 90% of Multi-Agent Systems Fail)
-Empirical software engineering research on multi-agent trajectories (such as the **MAST taxonomy**, arXiv:2503.13657, evaluating 1,600+ multi-agent traces) demonstrates that autonomous coding agents rarely fail due to syntax or language inability. Instead, failures are organizational and behavioral:
-* **41.77% of observed failures** fall into **Specification Issues** (misinterpretation, unstated assumptions, ignoring constraints).
-* **37.60% of observed failures** stem from **Inter-Agent Misalignment** (referential handoffs, context drift, duplicate work).
-* **20.63% of observed failures** stem from **Task Verification Collapse** (false-positive passes, shallow test coverage).
-* The leading individual failure modes are **Step Repetition (17.14%)**, **Reasoning-Action Mismatch (13.98%)**, and **Failure to Request Clarification (11.65%)**.
+### Empirical Research Grounding (Why 90% of Multi-Agent Systems Fail)
 
-In the Tablekeeper challenge, this danger is multiplied because the organizers ship only a fraction of the test suite (**only 11% of checks are shipped in Stage 3, and 21% in Stage 4**). Factories that rely on passive verification fall into the *"Green Illusion"* trap—passing sample tests while failing completely against hidden grading suites.
+Rather than assembling agents ad-hoc, Cleo Factory is engineered on foundational empirical research analyzing multi-agent trajectory failure modes:
 
-### Cleo's Design Answer
-Cleo Factory does not treat agents as generalist coders chatting in an open room. It operates as a disciplined, role-based assembly line where:
-1. **Work is decomposed into atomic, numbered clauses (`CLAUSE-XXX`)** at kickoff.
-2. **Cognitive domains are strictly isolated** (Engine Invariants vs DOM/CSS Presentation).
-3. **Verification is adversarial and independent** (probing edge cases never tested by shipped checks).
-4. **All handoffs are self-contained evidence packets** (zero pointers, zero memory amnesia).
+| Research Foundation | Core Empirical Finding | Cleo Factory Architecture Response |
+| :--- | :--- | :--- |
+| **MAST Taxonomy**<br>*(arXiv:2503.13657, UC Berkeley, 1,600+ traces, $\kappa=0.88$)* | **41.77% of failures are Specification Issues**.<br>**37.60% are Inter-Agent Misalignment**.<br>**20.63% are Task Verification Collapse**.<br>Top individual failures: **Step Repetition (17.14%)**, **Reasoning-Action Mismatch (13.98%)**, **Failure to Clarify (11.65%)**. | **Ledger-First Protocol (`R-N.k`)**: Code cannot be written until every normative statement is cataloged. **Shared Board Synchronization**: Eliminates step repetition. **Mandatory Clarification Channel**: Prevents silent assumptions. |
+| **Anthropic Multi-Agent Systems Research** | Orchestrator-worker topologies outperform single agents by **+90.2% on broad engineering tasks**, but require strictly bounded, self-contained task delegation. Vague prompts trigger catastrophic duplicate work. | **Self-Contained Work Orders**: Dispatches carry complete specification text, exact paths, and explicit boundaries. No agent relies on "read the room" pointers. |
+| **Context Rot & "Lost in the Middle"**<br>*(Liu et al. / Stanford & Salesforce)* | LLM recall follows a U-shaped attention curve; middle instructions decay rapidly. Multi-turn chat threads suffer up to **-39% degradation** ("Lost in Conversation") due to early false assumptions. | **U-Shaped Attention Structuring**: Critical invariants and boundary rules are placed at the absolute top and bottom of each dispatch, followed by an explicit exit checklist. |
+| **Cognition Engineering Principles**<br>*(“Don’t Build Multi-Agents”)* | Actions carry implicit architectural choices. Multiple agents editing the same codebase simultaneously create divergent, irreconcilable states. | **Single-Threaded Writes per Domain**: Absolute territorial isolation. Engine writes to `src/`; Presentation writes to `public/`; Verification writes to `verification/`. Zero file contention. |
+| **METR Task Horizon Studies** | LLM agent reliability drops exponentially over extended horizons: ~100% on <4-minute tasks, but <10% on >4-hour sequential tasks. | **Atomic Micro Work Orders**: Complex stages are partitioned into granular, commit-sized units tied directly to ledger entries. |
 
 ---
 
-## 2. Factory Floor Architecture (4-Seat Decoupled Topology)
+## 2. Architectural Design Choices & Trade-Off Matrix
 
-```mermaid
-flowchart TD
-    Human([The Mandor / Site Supervisor]) -->|1. Single Kickoff Dispatch| Prime["@cleo-prime\nCoordinator & Technical Lead\nModel: OpenCode / MuseSpark 1.3"]
+### Why a 4-Seat Topology? (The Coordination Boundary)
+A common failure in multi-agent designs is seat inflation. Adding seats expands inter-agent communication channels quadratically:
+$$\text{Channels} = \frac{N(N - 1)}{2}$$
+With 7 seats, there are 21 potential points of misalignment. With 4 seats, communication channels are constrained to exactly 6 well-defined interfaces:
 
-    subgraph Cleo Factory Floor [Autonomous Execution Boundary]
-        Prime -->|2. Task Brief + Atomic Clause IDs| Forge["@cleo-forge\nCore Engine Builder (Backend)\nModel: OpenCode / MuseSpark 1.3\nRole: Invariants, Math, Atomic Locks, API"]
-        Prime -->|3. Task Brief + UI/UX Contracts| Sentinel["@cleo-sentinel\nInterface Builder (Frontend)\nModel: OpenCode / MuseSpark 1.3\nRole: Semantic HTML, CSS Variables, Reactive DOM"]
-
-        Forge -->|4. Engine Commit & Local Proof| Sentinel
-        Sentinel -->|5. Assembled Revision & DOM Artifacts| Release["@cleo-release\nAdversarial Auditor & Verifier\nModel: OpenCode / MuseSpark 1.3\nRole: Concurrency Fuzzing, Spec Matrix Audit"]
-
-        Release -.->|Rejection with Command & Diff| Forge
-        Release -.->|Rejection with UI Failure Log| Sentinel
-        Release -->|6. Verified Certification & Git Tag| Prime
-    end
-
-    Prime -->|7. Autonomous Delivery| Output([Certified Release & room.json])
+```
+                       ┌───────────────────────────────┐
+                       │          CLEO-PRIME           │
+                       │   Coordinator & Architect     │
+                       │  Ledger, Board, Gate Arbiter  │
+                       └──────────────┬────────────────┘
+                                      │
+                      Self-Contained Work Orders (U-Shape)
+                                      │
+              ┌───────────────────────┴───────────────────────┐
+              ▼                                               ▼
+     ┌───────────────────┐                         ┌───────────────────┐
+     │    CLEO-FORGE     │                         │   CLEO-SENTINEL   │
+     │  Core Backend &   │◄─── API Contracts ─────►│  Presentation UI  │
+     │  State Machines   │                         │  Warm Hospitality │
+     └────────┬──────────┘                         └─────────┬─────────┘
+              │                                              │
+              │ Single-Threaded Write: src/                  │ Single-Threaded Write: public/
+              │                                              │
+              └───────────────────────┬──────────────────────┘
+                                      ▼
+                       ┌───────────────────────────────┐
+                       │         CLEO-RELEASE          │
+                       │   Adversarial Quality QA      │
+                       │ 8-Point Attack & Invariants   │
+                       └───────────────────────────────┘
 ```
 
----
-
-## 3. Seat Roles & Cognitive Division
-
-To prevent **agent cognitive overload** (where an agent hallucinates or drops CSS contracts while writing complex interval trees), each seat owns a non-overlapping operational domain:
-
-| Seat Handle | Runtime & Model | Architectural Ownership | What It Is Forbidden From Doing |
-|---|---|---|---|
-| **`@cleo-prime`** | OpenCode (`muse-spark-1.3`) | Factory coordination, requirements breakdown (`PLAN.md`), atomic clause ledger, task routing, and final delivery report. | **Never writes product code.** |
-| **`@cleo-forge`** | OpenCode (`muse-spark-1.3`) | Domain invariants, zero-dependency Node.js engine, interval math, transactional concurrency serialization, and REST API routes. | **Never touches HTML templates or CSS stylesheets.** |
-| **`@cleo-sentinel`** | OpenCode (`muse-spark-1.3`) | Modern presentation hierarchy, CSS design tokens, mobile-to-desktop responsiveness (375px–1280px), in-page reactive DOM updates, and preserving 100% of `data-testid` contracts. | **Never modifies backend database state or core transaction logic.** |
-| **`@cleo-release`** | OpenCode (`muse-spark-1.3`) | Independent spec-clause ledger verification, adversarial race-condition probing (50+ simultaneous requests), clean container builds, and acceptance tagging (`accept-stage-N`). | **Never writes or patches application code.** |
+1. **`@cleo-prime` (Factory Coordinator)**: Owns planning, requirements ledger (`ledger/stage-N.md`), Band shared task board, and release certification. **Forbidden from writing product code.**
+2. **`@cleo-forge` (Engine Builder)**: Owns domain algorithms, transactional mutex locking, calendar validation, and REST API endpoints under `src/`. **Forbidden from editing HTML/CSS.**
+3. **`@cleo-sentinel` (Interface Builder)**: Owns Warm Hospitality UI, CSS design tokens, responsive viewports (375px–1280px), and integration test hooks under `public/`. **Forbidden from modifying core state or database logic.**
+4. **`@cleo-release` (Adversarial Verifier)**: Owns independent reference models, differential fuzzing, and Docker container qualification under `verification/`. **Forbidden from patching product code.**
 
 ---
 
-## 4. The Four Pillars of Cleo Factory
+### Why a Native Monolith instead of SPA Frameworks (React Router 7 / Next.js)?
 
-### Pillar I: Spec-Clause Traceability Ledger
-Rather than allowing agents to "code to the test", `@cleo-prime` extracts every requirement sentence into an immutable clause identifier (`CLAUSE-001`, `CLAUSE-002`, ...). Every Git commit from `@cleo-forge` and `@cleo-sentinel` must cite the clause it implements. Approval from `@cleo-release` requires a verifiable mapping: **Clause ID → Code Reference → Independent Probe → Pass Status**.
+While modern frameworks like React Router 7 or TanStack are permitted, deploying them inside an autonomous dark-factory environment introduces fatal risk vectors:
 
-### Pillar II: Cognitive Decoupling (Engine vs UI/UX)
-Prior iterations showed that a single developer agent produces either broken backend locks or unstyled 1990s HTML. Cleo isolates the visual presentation into `@cleo-sentinel`, enforcing:
-* **Mutual Exclusivity:** Zero-state alerts (`no-slots`) and active slot grids (`availability-grid`) never collide in the DOM.
-* **Reactive DOM Mutation:** User cancellations and booking submissions mutate the DOM in-place without requiring full browser reloads.
-* **Responsive Tokens:** Native CSS variables for consistent typography, spacing, and contrast.
-
-### Pillar III: Adversarial Verification (Closing the 89% Hidden Check Gap)
-`@cleo-release` operates under the strict assumption that **shipped checks are incomplete**. It independently authors and executes:
-1. **Burst Concurrency Probes:** Rapid parallel requests targeting identical microsecond intervals to guarantee atomic conflict rejection.
-2. **Boundary & Timezone Stressors:** Validating IANA timezone offsets and leap boundaries against raw spec definitions.
-3. **State Crash Recovery:** Testing state persistence and export/import fidelity across service restarts.
-
-### Pillar IV: Clean Room Isolation (Gate 3 Compliance)
-Cleo builds services with **zero runtime external npm dependencies**, using native Node.js primitives (`http`, `crypto`, `Intl`). All stages execute in hardened Linux Alpine containers with:
-* `--network none` (strict runtime offline isolation).
-* 2 vCPU and 2 GiB memory constraints.
-* Sub-second startup latency.
+| Constraint Factor | Heavy SPA Frameworks (React 19 / Vite / Remix) | Cleo Native Monolith (Node.js + Semantic DOM + CSS) |
+| :--- | :--- | :--- |
+| **Offline Container (`--network none`)** | High failure risk: thousands of npm sub-dependencies; post-install scripts or cache misses trigger build abortion. | **Zero Runtime Dependencies**: Uses Node.js standard library (`http`, `crypto`, `Intl`). 100% offline-ready. |
+| **Resource Limits (2 vCPU, 2 GiB RAM)** | Dev servers and SSR runtimes consume 400–800 MB, risking Out-Of-Memory (OOM) crashes under concurrent test bursts. | **Tiny Footprint**: Memory usage remains <35 MB; instant cold boot (<20ms). Easily sustains concurrent request floods. |
+| **Single-Port Contract** | Requires multiple processes (backend API + frontend server) bridged by internal reverse proxies (nginx). | **Unified HTTP Dispatcher**: A single native server serves JSON API routes and static client assets on port 8080. |
+| **Automated Playwright Grading** | Client-side hydration delays frequently cause transient selector timeouts in headless browser runners. | **Deterministic DOM**: Pure semantic HTML5 elements are ready for immediate assertion with zero hydration lag. |
 
 ---
 
-## 5. Repository Structure & Verification
+## 3. The 5-Block Standard Mandate Architecture
+
+Every seat mandate in `mandates/` is structured into five standardized operational blocks designed to neutralize the leading failure modes identified by the MAST taxonomy:
+
+1. **Identity & Hard Prohibitions (Block 1)**: Defines seat handle, model runtime, and strict negative boundaries (neutralizing **Role Disobedience FM-1.2**).
+2. **Deliverables & Artifact Surface (Block 2)**: Dictates exact filesystem paths, format standards, and directory inheritance rules.
+3. **Definition of Done (Block 3)**: Mandates that an item is finished only when backed by verifiable test execution citing specific ledger clauses (neutralizing **Reasoning-Action Mismatch FM-1.3**).
+4. **Handoff Protocol & Git Identity (Block 4)**: Requires self-contained dispatches, U-shaped attention structuring, and unique git commit author credentials (`git -c user.name=...`).
+5. **Autonomy & Escalation (Block 5)**: Enforces dark-factory silence toward humans while establishing a mandatory escalation protocol to `@cleo-prime` for specification ambiguities (neutralizing **Failure to Clarify FM-3.1**).
+
+---
+
+## 4. Closing the 89% "Green Illusion" Gap
+
+In the Dark Factory competition, the organizers ship only a fraction of the test suite (**only 11% of checks are shipped in Stage 3, and 21% in Stage 4**). Teams that "code to the visible tests" suffer total disqualification or failure on hidden grading suites.
+
+Cleo Factory overcomes this with the **8-Point Adversarial Attack Matrix** executed by `@cleo-release`:
+1. **Double-Commit Concurrency Bursts**: Firing parallel simultaneous requests at identical microsecond intervals to verify atomic serialization.
+2. **Replay & Idempotency Probes**: Validating identical replay outcomes and zero side-effect duplication for retried keys.
+3. **Check-and-Act Race Windows**: Attacking the time gap between resource availability check and state mutation.
+4. **Boundary & Malformed Inputs**: Fuzzing nonexistent calendar dates (e.g. February 30), negative values, and oversized bodies.
+5. **Domain Conservation Invariants**: Asserting domain balance laws (e.g. zero overlapping bookings per table, immutable history) after every test run.
+6. **Numerical Representation**: Auditing integer arithmetic to ensure zero floating-point precision loss.
+7. **Degraded Connection Modes**: Testing client recovery during aborted and uncertain network transmissions.
+8. **Isolated Container Compliance**: Verifying container builds under `--network none` with `GET /health` responding within 60 seconds.
+
+---
+
+## 5. Repository Topology & Pre-Flight Verification
 
 ```text
 cleo-tablekeeper/
-  README.md            # You are here: architectural vision and operational thesis
-  FACTORY.md           # Deep-dive design decisions, failure recovery, and trade-offs
-  mandates/            # Generic role mandates (0 track vocabulary violations)
-    cleo-prime.md      # Coordinator mandate
-    cleo-forge.md      # Core engine builder mandate
-    cleo-sentinel.md   # Presentation builder mandate
-    cleo-release.md    # Adversarial verifier mandate
-  room.json            # Full recorded session exported from Band Desktop
-  stage-1/             # Complete buildable service: Idempotent JSON API & atomic moves
-  stage-2/             # Stage 1 + Reactive browser product & availability grid
-  stage-3/             # Stage 2 + Effective-dated dynamic policies & recurring series
-  stage-4/             # Stage 3 + Deterministic emergency closure replanning
+  README.md            # Architectural blueprint, research grounding, and design matrix
+  FACTORY.md           # Operational accounting, costs, failure recovery, and trade-offs
+  mandates/            # Standardized 5-block generic mandates (0 Gate 4 violations)
+    cleo-prime.md      # Production coordinator & ledger architect
+    cleo-forge.md      # Core backend engine & transactional state builder
+    cleo-sentinel.md   # Presentation layer & Warm Hospitality design builder
+    cleo-release.md    # Adversarial quality auditor & release gatekeeper
+  stage-1/             # Complete buildable service: Concurrency, IANA time, idempotent API
+  stage-2/             # Stage 1 + Warm Hospitality browser UI, competing search, combinations
+  stage-3/             # Stage 2 + Dynamic effective-dated policies & recurring agreements
+  stage-4/             # Stage 3 + 3-tier deterministic closure replanning & atomic apply
+  room.json            # Unedited session log exported directly from Band Desktop
 ```
 
-### Offline Pre-Flight Verification
-Validate gate compliance and vocabulary cleanliness before evaluation:
+### Pre-Flight Compliance Verification
+Verify Gate 1, Gate 2, and Gate 4 vocabulary compliance:
 ```bash
-python -m harness check . --track tablekeeper
+python3 -m harness check . --track tablekeeper
 ```
 
-### Running Containerized Stages
+### Running Isolated Verification Harness
 ```bash
-# Stage 1 isolated verification
-python -m harness run --track tablekeeper --repo . --stage 1 --mode isolated
+# Verify individual stage in isolated grading mode
+python3 -m harness run --track tablekeeper --repo . --stage 1 --mode isolated
 
-# Full factory pipeline verification across all stages
-python -m harness run --track tablekeeper --repo . --all --mode isolated
+# Full 4-stage pipeline execution
+python3 -m harness run --track tablekeeper --repo . --all --mode isolated
 ```
