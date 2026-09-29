@@ -59,6 +59,10 @@ s, b, _ = req("POST", "/reservations",
     {"restaurant_id": "r1", "table_id": "t_1", "table_ids": ["t_1"], "starts_at_local": "2026-09-24T19:00", "party_size": 2},
     {**A, "Idempotency-Key": "c2"})
 check("R-2.16 both-ids-422", s == 422 and code(b) == "validation_failed", f"got {s} {b[:150]}")
+s, b, _ = req("POST", "/reservations",
+    {"restaurant_id": "r1", "table_ids": ["t_1", "t_2"], "starts_at_local": "2026-09-24T19:30", "party_size": 6},
+    {**A, "Idempotency-Key": "c5"})
+check("R-2.17 overlap-member-409", s == 409 and code(b) == "table_unavailable", f"got {s} {b[:150]}")
 # R-2.17 unlisted pair -> combination_not_allowed; >2 -> same; dup -> validation_failed; overlap any member -> 409
 FIX3 = {"users": [{"id": "u1", "email": "a@b.com", "password": "correct horse", "display_name": "Ada"}],
  "restaurants": [{"id": "r1", "name": "Zum Anker", "timezone": "Europe/Berlin", "slot_minutes": 30,
@@ -68,6 +72,8 @@ FIX3 = {"users": [{"id": "u1", "email": "a@b.com", "password": "correct horse", 
    "combinable": [["t_1", "t_2"]]}],
  "reservations": []}
 s, b, _ = req("POST", "/_test/reset", FIX3)
+s0, b0, _ = req("POST", "/auth/login", {"email": "a@b.com", "password": "correct horse"})
+A = {"Authorization": "Bearer " + (json.loads(b0).get("token", "") if s0 == 200 else "")}
 s, b, _ = req("POST", "/reservations",
     {"restaurant_id": "r1", "table_ids": ["t_1", "t_2", "t_3"], "starts_at_local": "2026-09-24T19:00", "party_size": 2},
     {**A, "Idempotency-Key": "c3"})
@@ -76,10 +82,7 @@ s, b, _ = req("POST", "/reservations",
     {"restaurant_id": "r1", "table_ids": ["t_1", "t_1"], "starts_at_local": "2026-09-24T20:30", "party_size": 2},
     {**A, "Idempotency-Key": "c4"})
 check("R-2.17 dup-422", s == 422 and code(b) == "validation_failed", f"got {s} {b[:150]}")
-s, b, _ = req("POST", "/reservations",
-    {"restaurant_id": "r1", "table_ids": ["t_1", "t_2"], "starts_at_local": "2026-09-24T19:30", "party_size": 6},
-    {**A, "Idempotency-Key": "c5"})
-check("R-2.17 overlap-member-409", s == 409 and code(b) == "table_unavailable", f"got {s} {b[:150]}")
+# c5 runs on the FIX fixture while c1 still holds [t_1,t_2]@19:00 (no reset between).
 # R-2.1 routes return HTML
 for route in ["/", "/signup", "/login", "/lookup"]:
     s, b = get_text(route)
