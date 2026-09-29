@@ -1,0 +1,5 @@
+// Stage-4 independent probe (seed commit): zero stage-4 symbols in stage-4/src/server.js.
+// grep -c -i "replan|plan_id|stale_plan|no_feasible_plan|amend|unused_seats|closure" -> 0
+// POST /restaurants/r1/replans -> 404 not_found (no route). R-4.1..R-4.8: no surface.
+// Health gate: GET /health -> {"status":"ok"} (pass; server is stage-3 copy).
+// Verdict basis: REJECT <seed> — implementation absent, awaiting forge handoff.
