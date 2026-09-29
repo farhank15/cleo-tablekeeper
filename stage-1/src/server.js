@@ -161,15 +161,28 @@ async function handler(req, res) {
     if (method === 'POST' && path === '/_test/reset') {
       const raw = await readBody(req);
       let f; try { f = raw ? JSON.parse(raw) : {}; } catch { return err(res, 400, 'malformed_request'); }
-      S = fresh();
-      for (const u of (f.users || [])) S.users.push({ id: u.id, email: u.email, pw: hashPw(u.password), display_name: u.display_name, tokens: [] });
-      for (const r of (f.restaurants || [])) S.restaurants.push(r);
+      if (typeof f !== 'object' || f === null || Array.isArray(f)) return err(res, 400, 'malformed_request');
+      // R-1.6: all fixture IDs opaque strings <=64 chars; R-1.38: references 6-12 A-Z0-9
+      const idOk = s => typeof s === 'string' && s.length >= 1 && s.length <= 64;
+      const refOk = s => typeof s === 'string' && /^[A-Z0-9]{6,12}$/.test(s);
+      for (const u of (f.users || [])) { if (!idOk(u.id)) return err(res, 422, 'validation_failed'); }
+      for (const r of (f.restaurants || [])) {
+        if (!idOk(r.id)) return err(res, 422, 'validation_failed');
+        for (const t of (r.tables || [])) { if (!idOk(t.id)) return err(res, 422, 'validation_failed'); }
+      }
       for (const r of (f.reservations || [])) {
-        const rest = getRest(r.restaurant_id);
+        if (!idOk(r.id) || !refOk(r.reference) || !idOk(r.restaurant_id) || !idOk(r.table_id) || !idOk(r.user_id)) return err(res, 422, 'validation_failed');
+      }
+      const ns = fresh();
+      for (const u of (f.users || [])) ns.users.push({ id: u.id, email: u.email, pw: hashPw(u.password), display_name: u.display_name, tokens: [] });
+      for (const r of (f.restaurants || [])) ns.restaurants.push(r);
+      for (const r of (f.reservations || [])) {
+        const rest = ns.restaurants.find(x => x.id === r.restaurant_id);
         const p = parseLocalStrict(r.starts_at_local);
         const inst = p && rest ? resolveLocal(rest.timezone, p.y, p.mo, p.d, p.h, p.mi) : [];
-        S.reservations.push({ id: r.id, reference: r.reference, restaurant_id: r.restaurant_id, table_id: r.table_id, party_size: r.party_size, status: 'confirmed', starts_at_local: r.starts_at_local, startMs: inst.length ? inst[0] : 0, createdMs: Date.now(), user_id: r.user_id });
+        ns.reservations.push({ id: r.id, reference: r.reference, restaurant_id: r.restaurant_id, table_id: r.table_id, party_size: r.party_size, status: 'confirmed', starts_at_local: r.starts_at_local, startMs: inst.length ? inst[0] : 0, createdMs: Date.now(), user_id: r.user_id });
       }
+      S = ns;
       return send(res, 204, null);
     }
     if (method === 'GET' && path === '/_test/export') {
