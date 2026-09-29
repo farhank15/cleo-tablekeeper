@@ -2,7 +2,7 @@ const $=id=>document.getElementById(id);
 const store={get token(){return localStorage.getItem('tk_token')},set token(v){v?localStorage.setItem('tk_token',v):localStorage.removeItem('tk_token')},get name(){return localStorage.getItem('tk_name')},set name(v){v?localStorage.setItem('tk_name',v):localStorage.removeItem('tk_name')}};
 let restaurants=[],restMap={},searchSeq=0,currentSearch=null,sel=null,lastKey=null,lastBody=null,lastRef=null;
 function authH(){return store.token?{Authorization:'Bearer '+store.token,'Content-Type':'application/json'}:{'Content-Type':'application/json'}}
-function showAuth(){const cu=$('current-user'),lo=$('logout-button');if(store.token){cu.hidden=false;cu.textContent=store.name||'Signed in';lo.hidden=false}else{cu.hidden=true;lo.hidden=true}}
+function showAuth(){const box=document.querySelector('.userbox');let cu=$('current-user'),lo=$('logout-button');if(store.token){if(!cu){cu=document.createElement('span');cu.id='current-user';cu.setAttribute('data-testid','current-user');box.prepend(cu)}if(!lo){lo=document.createElement('button');lo.id='logout-button';lo.setAttribute('data-testid','logout-button');lo.textContent='Log out';lo.addEventListener('click',()=>{store.token=null;store.name=null;route()});box.appendChild(lo)}cu.textContent=store.name||'Signed in'}else{if(cu)cu.remove();if(lo)lo.remove()}}
 function route(){const p=location.pathname;for(const s of document.querySelectorAll('main>section'))s.hidden=true;$('screen-search').hidden=false;if(p==='/signup')$('screen-signup').hidden=false;else if(p==='/login')$('screen-login').hidden=false;else if(p==='/lookup')$('screen-lookup').hidden=false;showAuth()}
 // Dynamic nodes: testid nodes exist in DOM ONLY when active (absent otherwise).
 function mount(testid,mountId,html){clear(testid);const m=$(mountId);const t=document.createElement('div');t.setAttribute('data-testid',testid);if(html!=null)t.innerHTML=html;else t.textContent='';m.appendChild(t);return t}
@@ -20,8 +20,8 @@ if(!slots.length){mnt.innerHTML='';const n=document.createElement('div');n.setAt
 const grid=document.createElement('div');grid.setAttribute('data-testid','availability-grid');grid.className='grid';mnt.appendChild(grid);st.textContent=`${slots.length} time slots`;
 for(const s of slots){const hh=s.starts_at_local.slice(11,16);const avail=s.available_table_ids||[];const opts=s.available_options||null;
  const cells=[];
- if(opts){for(const o of opts){const ids=o.table_ids;if(ids.length===1)cells.push({ids,avail:avail.includes(ids[0])});else cells.push({ids,avail:true});}}
- else{for(const t of (rest.tables||[]))cells.push({ids:[t.id],avail:avail.includes(t.id)});}
+ for(const t of (rest.tables||[]))cells.push({ids:[t.id],avail:avail.includes(t.id)});
+ if(opts){for(const o of opts){if(o.table_ids.length>1)cells.push({ids:o.table_ids,avail:true});}}
  for(const c of cells){const tid=c.ids.length===1?c.ids[0]:c.ids.join('+');const b=document.createElement('button');b.setAttribute('data-testid',`slot-${tid}-${hh}`);b.dataset.available=String(c.avail);b.className='slot'+(c.avail?'':' unavailable');const labels=c.ids.map(id=>tableLabel(rest,id)).join(' + ');b.textContent=`${labels} · ${hh}`;
   b.addEventListener('click',()=>{if(b.dataset.available!=='true')return;openBooking(rid,rest,c.ids,s,ps)});grid.appendChild(b)}}
 }
